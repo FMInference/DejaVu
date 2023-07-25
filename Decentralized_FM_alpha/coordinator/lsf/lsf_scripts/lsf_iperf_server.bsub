@@ -1,0 +1,10 @@
+#!/bin/bash
+#BSUB -n 1                     # 1 cores
+#BSUB -W 0:20                   # 15-minutes run-time
+#BSUB -R "rusage[mem=32000]"     # 4000 MB per core
+#BSUB -o /cluster/home/biyuan/exe_log/iperf_server.out.%J
+#BSUB -e /cluster/home/biyuan/exe_log/iperf_server.err.%J
+
+echo "Iperf3 server side:"
+
+iperf3 -s

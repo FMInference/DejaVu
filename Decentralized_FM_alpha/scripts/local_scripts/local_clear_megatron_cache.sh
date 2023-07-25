@@ -1,0 +1,1 @@
+rm ~/Megatron-LM/megatron/fused_kernels/build/*

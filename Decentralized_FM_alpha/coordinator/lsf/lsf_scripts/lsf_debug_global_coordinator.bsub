@@ -1,0 +1,17 @@
+#!/bin/bash
+#BSUB -n 1                     # 1 cores
+#BSUB -W 0:03                   # 3-minutes run-time
+#BSUB -R "rusage[mem=32000]"     # 4000 MB per core
+#BSUB -R "rusage[ngpus_excl_p=1]"
+#BSUB -R "select[gpu_model0==NVIDIATITANRTX]"
+#BSUB -o /cluster/home/biyuan/exe_log/foo.out.%J
+#BSUB -e /cluster/home/biyuan/exe_log/foo.err.%J
+
+
+module load gcc/6.3.0 cuda/11.0.3             # Load modules from Euler setup
+source activate base                          # Activate my conda python environment
+cd /cluster/home/biyuan/GPT-home-private      # Change directory
+
+
+
+python foo.py

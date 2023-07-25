@@ -1,0 +1,12 @@
+executable = osg_foo.sh
+
+error = osg_foo.error
+output = osg_foo.output
+log = osg_foo.log
+
+request_gpus = 1
+request_cpus = 1
+request_memory = 4 GB
+request_disk = 2 GB
+
+queue 1

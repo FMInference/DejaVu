@@ -1,0 +1,31 @@
+#!/bin/bash
+#BSUB -n 2                     # 1 cores
+#BSUB -W 3:59                   # 3-minutes run-time
+#BSUB -R "rusage[mem=8000]"     # 8 GB per core
+#BSUB -R "rusage[ngpus_excl_p=1]"
+#BSUB -R "select[gpu_mtotal0>=10000]"
+#BSUB -o /cluster/home/biyuan/exe_log/gptneox.out.%J
+#BSUB -e /cluster/home/biyuan/exe_log/gptneox.err.%J
+
+module load gcc/6.3.0 cuda/11.0.3             # Load modules from Euler setup
+module load eth_proxy
+source activate base                                     # Activate my conda python environment
+cd /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/GPT-home-private      # Change directory
+
+nvidia-smi
+
+world_size=11
+
+DIST_CONF="--pp-mode pipe_sync_sample_mask_token_pipe --pipeline-group-size $world_size --cuda-id 0"
+MODEL_CONF="--model-type gptneox --model-name /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/pretrained_models/gpt-neox-20b-new --num-iters 99999999999"
+INFERENCE_CONF="--fp16 --budget 12000 --num-layers 4 --batch-size 1"
+COOR_CONF="--coordinator-server-ip 129.132.93.115"
+#!/bin/bash
+
+export NCCL_SOCKET_IFNAME=access
+export GLOO_SOCKET_IFNAME=access
+export NCCL_DEBUG=INFO
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=1
+
+python dist_latency_inference_on_euler.py $DIST_CONF $MODEL_CONF $INFERENCE_CONF $COOR_CONF \

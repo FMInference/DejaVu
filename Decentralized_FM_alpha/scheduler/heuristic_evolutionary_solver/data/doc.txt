@@ -1,0 +1,1 @@
+This directory saves the output of the solver.

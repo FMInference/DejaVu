@@ -1,0 +1,22 @@
+#!/bin/bash
+#BSUB -n 1                     # 1 cores
+#BSUB -W 0:03                   # 3-minutes run-time
+#BSUB -R "rusage[mem=32000]"     # 4000 MB per core
+#BSUB -R "rusage[ngpus_excl_p=1]"
+#BSUB -R "select[gpu_model0==NVIDIATITANRTX]"
+#BSUB -o /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/exe_log/foo.out.%J
+#BSUB -e /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/exe_log/foo.err.%J
+
+env2lmod
+module load gcc/6.3.0 cuda/11.0.3             # Load modules from Euler setup
+module load eth_proxy
+source activate base                                     # Activate my conda python environment
+cd /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/GPT-home-private      # Change directory
+
+ifconfig
+
+## capture IP address of network dev access
+ip=`ip addr show dev access | grep inet | cut -b 10- | cut -d ' ' -f 1  | cut -d '/' -f 1`
+echo "Capture the ip of the assigned node: ${ip}"
+
+python foo.py

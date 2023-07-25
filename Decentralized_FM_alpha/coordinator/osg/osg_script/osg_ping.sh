@@ -1,0 +1,1 @@
+curl -X GET https://coordinator.shift.ml/eth/health

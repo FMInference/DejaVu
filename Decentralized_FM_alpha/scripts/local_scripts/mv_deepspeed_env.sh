@@ -1,0 +1,1 @@
+cp ~/GPT-home-private/scripts/ds_pwfree_ssh/.deepspeed_env ~/

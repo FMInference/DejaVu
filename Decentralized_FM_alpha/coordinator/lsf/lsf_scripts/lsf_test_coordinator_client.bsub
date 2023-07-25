@@ -1,0 +1,15 @@
+#!/bin/bash
+#BSUB -n 1                     # 1 cores
+#BSUB -W 0:03                   # 3-minutes run-time
+#BSUB -R "rusage[mem=2000]"     # 4000 MB per core
+#BSUB -o /cluster/home/biyuan/exe_log/test_coordinator_client.out.%J
+#BSUB -e /cluster/home/biyuan/exe_log/test_coordinator_client.err.%J
+
+
+module load gcc/6.3.0                         # Load modules from Euler setup
+source activate base                          # Activate my conda python environment
+cd /cluster/home/biyuan/GPT-home-private/coordinator      # Change directory
+
+ifconfig
+
+python coordinator_client.py --coordinator-server-ip 129.132.93.84

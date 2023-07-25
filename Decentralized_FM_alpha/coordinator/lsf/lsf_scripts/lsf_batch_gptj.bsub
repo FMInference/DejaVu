@@ -1,0 +1,30 @@
+#!/bin/bash
+#BSUB -n 2                     # 1 cores
+#BSUB -W 11:59                   # 3-minutes run-time
+#BSUB -R "rusage[mem=8000]"     # 32 GB per core
+#BSUB -R "rusage[ngpus_excl_p=1]"
+#BSUB -R "select[gpu_mtotal0>=10000]"
+#BSUB -o /cluster/home/juewang/fm/opt_exe_log/out.%J
+#BSUB -e /cluster/home/juewang/fm/opt_exe_log/err.%J
+
+module load gcc/6.3.0 cuda/11.0.3             # Load modules from Euler setup
+source activate pipeline                          # Activate my conda python environment
+cd /cluster/home/juewang/workspace/GPT-home-latest     # Change directory
+
+nvidia-smi
+
+world_size=4
+
+DIST_CONF="--pp-mode pipe_sync_sample_mask_token_pipe --pipeline-group-size $world_size --cuda-id 0"
+MODEL_CONF="--model-type gptj --model-name /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/pretrained_models/gpt-j-6B --num-iters 99999999999"
+INFERENCE_CONF="--fp16 --budget 10097 --micro-batch-size 1 --num-layers 7 --max-layers 28"
+COOR_CONF="--coordinator-server-ip 129.132.93.119"
+#!/bin/bash
+
+export NCCL_SOCKET_IFNAME=access
+export GLOO_SOCKET_IFNAME=access
+export NCCL_DEBUG=INFO
+export NCCL_IB_DISABLE=1
+export NCCL_P2P_DISABLE=1
+
+python dist_inference_runner_w_euler_coordinator.py $DIST_CONF $MODEL_CONF $INFERENCE_CONF $COOR_CONF \

@@ -1,0 +1,34 @@
+#!/bin/bash
+#BSUB -n 32                     # 32 cores
+#BSUB -R "span[hosts=1]"       # ptile means how many cores per node
+#BSUB -W 1:00                   # 1 hour run-time
+#BSUB -R "rusage[mem=6000]"     # Memory per core.
+#BSUB -o /cluster/home/biyuan/exe_log/hybrid_cpu_opt175.out.%J
+#BSUB -e /cluster/home/biyuan/exe_log/hybrid_cpu_opt175.err.%J
+
+env2lmod
+module load gcc/6.3.0 cuda/11.0.3             # Load modules from Euler setup
+source activate base                          # Activate my conda python environment
+cd /nfs/iiscratch-zhang.inf.ethz.ch/export/zhang/export/fm/GPT-home-private       # Change directory
+
+world_size=8
+pipeline_size=4
+stage_num_layers=1
+producer_buffer_size=4
+consumer_buffer_size=2
+global_num_layers=$(($stage_num_layers*$pipeline_size))
+
+
+DIST_CONF="--pp-mode pipe_hybrid_greedy_async --world-size $world_size --pipeline-group-size $pipeline_size --node-type CPU --use-cuda False"
+MODEL_CONF="--model-type gptj --model-name ./pretrained_models/gpt-j-66B"
+INFERENCE_CONF="--num-iters 2 --input-seq-length 512 --generate-seq-length 32 --prompt-micro-batch-size 1 --token-micro-batch-size 1 --stage-num-layers $stage_num_layers --global-num-layers $global_num_layers"
+BUF_CONF="--producer-buffer-size $producer_buffer_size --consumer-buffer-size $consumer_buffer_size"
+
+COOR_CONF="--coordinator-server-ip 129.132.93.110"
+
+export NCCL_SOCKET_IFNAME=access
+export GLOO_SOCKET_IFNAME=access
+export OMP_NUM_THREADS=32
+
+##python dist_training_runner_w_coordinator.py $DIST_CONF $MODEL_CONF $COOR_CONF
+python dist_inference_hybrid_runner_w_euler_coordinator.py --fp16 $DIST_CONF $MODEL_CONF $COOR_CONF $INFERENCE_CONF $BUF_CONF \
