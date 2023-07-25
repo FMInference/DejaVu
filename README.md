@@ -13,10 +13,14 @@ This repo is consisting of two parts: (1) Training sparsity predictor (2) End-to
 We collect training data by running model inference using Decentralized_FM_alpha. 
 
 **Requirements**
+
+
+```
     pip3 install --pre torch==1.12.0+cu113 -f https://download.pytorch.org/whl/torch_stable.html
     pip3 install cupy-cuda11x==11.0.0
     python3 -m cupyx.tools.install_library --cuda 11.x --library nccl
     pip3 install transformers
+```
 
 **Collect the training data**
 
@@ -42,10 +46,13 @@ For detailed instruction, see DejaVu/sparse_predictor/README.md
 We based our accuracy benchmark based on Decentralized_FM_alpha(https://github.com/DS3Lab/Decentralized_FM_alpha)
 
 **Requirements**
+
+```
     pip3 install --pre torch==1.12.0+cu113 -f https://download.pytorch.org/whl/torch_stable.html
     pip3 install cupy-cuda11x==11.0.0
     python3 -m cupyx.tools.install_library --cuda 11.x --library nccl
     pip3 install transformers
+```
 
 **Collect Training Data to train sparsity classifier.**
 
