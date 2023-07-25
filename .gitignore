@@ -1,0 +1,12 @@
+/Decentralized_FM_alpha/binhang_ds3_aws_oregon.pem
+/Decentralized_FM_alpha/scripts/tc_scripts/heterogeneous_setup_case*.sh
+/Decentralized_FM_alpha/task_datasets/data/*
+/Decentralized_FM_alpha/.ipynb_checkpoints
+/Decentralized_FM_alpha/__pycache__
+/Decentralized_FM_alpha/trace_json
+/Decentralized_FM_alpha/us_coordinator.pem
+/Decentralized_FM_alpha/vs_code.config
+/Decentralized_FM_alpha/tmp_executable_1/*
+/Decentralized_FM_alpha/tmp_executable_64/*
+/Decentralized_FM_alpha/unit_tests/tmp_executable_1/*
+/Decentralized_FM_alpha/unit_tests/tmp_executable_64/*
