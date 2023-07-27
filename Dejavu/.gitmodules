@@ -1,0 +1,6 @@
+[submodule "deps/Megatron-LM"]
+	path = deps/megatron
+	url = https://github.com/NVIDIA/Megatron-LM.git
+[submodule "csrc/stream_attn/cutlass"]
+	path = csrc/stream_attn/cutlass
+	url = https://github.com/NVIDIA/cutlass.git
