@@ -7,7 +7,7 @@ Large language models (LLMs) with hundreds of billions of parameters have sparke
 Paper Link: https://proceedings.mlr.press/v202/liu23am.html
 
 
-This repo is consisting of two parts: (1) Training sparsity predictor (2) End-to-End Accuracy Benchmark (3) Generation Latency Benchmark.
+This repo is consisting of three parts: (1) Training sparsity predictor (2) End-to-End Accuracy Benchmark (3) Generation Latency Benchmark (coming soon!).
 
 ## Training sparsity predictor
 We collect training data by running model inference using Decentralized_FM_alpha. 
