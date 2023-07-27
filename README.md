@@ -7,7 +7,7 @@ Large language models (LLMs) with hundreds of billions of parameters have sparke
 Paper Link: https://proceedings.mlr.press/v202/liu23am.html
 
 
-This repo is consisting of three parts: (1) Training sparsity predictor (2) End-to-End Accuracy Benchmark (3) Generation Latency Benchmark (coming soon!).
+This repo is consisting of three parts: (1) Training sparsity predictor (2) End-to-End Accuracy Benchmark (3) Generation Latency Benchmark.
 
 ## Training sparsity predictor
 We collect training data by running model inference using Decentralized_FM_alpha. 
@@ -53,9 +53,8 @@ We based our accuracy benchmark based on Decentralized_FM_alpha(https://github.c
     python3 -m cupyx.tools.install_library --cuda 11.x --library nccl
     pip3 install transformers
 ```
-### Usage and Examples
 
-### Perplexity on c4
+**Perplexity on c4**
 
 To run evaluation using dense model, run 
 ```DejaVu/Decentralized_FM_alpha/run_infer_opt_175b_c4.sh```
@@ -67,6 +66,25 @@ Similar to collecting the data, you will need to specify
 (1) the model checkpoint path
 (2) the sparsity predictor checkpoint path
 (3) c4 data path
+
+## Generation Latency
+We provide pytorch based implementation that exploits cuda graph. 
+
+**Requirements**
+
+For best performance, please use docker. We provide a dockerfile with all requirement at DejaVu/Dejavu/Dockerfile
+
+**Dense Model Latency Benchmark**
+To benchmark latency with dense model, run
+```torchrun --nproc_per_node=$NUM_GPUs benchmark_generation_opt.py --model-name $MODEL_NAME ```
+
+Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_generation_opt.py with corrospondence to $MODEL_NAME
+
+
+**Sparse Model Latency Benchmark**
+
+Coming soon
+
 
 
 ## Citation

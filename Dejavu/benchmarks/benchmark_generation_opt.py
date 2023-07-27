@@ -11,7 +11,7 @@ from apex.transformer import parallel_state
 from src.utils.dejavu_util import remap_state_dict_opt, shard_state_dict_tp
 
 MODEL_PATH = {
-    "facebook/opt-30b": "/root/LSHOPT/opt-30b/",
+    "facebook/opt-30b": "",
 }
 parser = argparse.ArgumentParser(description="OPT generation benchmarking")
 parser.add_argument("--promptlen", type=int, default=128)
@@ -19,7 +19,7 @@ parser.add_argument("--genlen", type=int, default=100)
 parser.add_argument(
     "--model-name",
     type=str,
-    default="opt-175b",
+    default="facebook/opt-30b",
     help="model-name",
 )
 args = parser.parse_args()
