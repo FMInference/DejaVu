@@ -67,6 +67,25 @@ Similar to collecting the data, you will need to specify
 (2) the sparsity predictor checkpoint path
 (3) c4 data path
 
+**Accuracy on downstream task**
+
+We adopt lm-evaluation-harness for downstream task evaluation. 
+
+1. Generate task data
+```
+cd lm-eval-harness-adapter
+python generate_task_data.py --output-file wsc.jsonl --task-name wsc --num-fewshot 0
+```
+
+2. Run evaluation
+```DejaVu/Decentralized_FM_alpha/run_infer_opt_175b_task_sparse.sh```
+
+3. Evaluate model output
+```
+cd lm-eval-harness-adapter
+python evaluate_task_result.py --result-file output_wsc.jsonl --task-name wsc --num-fewshot 0 --model-type opt
+```
+
 ## Generation Latency
 We provide pytorch based implementation that exploits cuda graph. 
 
