@@ -2,16 +2,20 @@ import torch
 import copy
 import numpy as np
 from tqdm import tqdm
+
+
 def eval_print(validation_results):
     result = ""
     for metric_name, metirc_val in validation_results.items():
         result = f"{result}{metric_name}: {metirc_val:.4f} "
     return result
 
+
 def generate_label(y):
     # positive
     one_hot = (y > 0).to(y.dtype)
     return one_hot
+
 
 def evaluate(model, device, loader, args, smalltest=False):
     model.eval()
@@ -34,12 +38,10 @@ def evaluate(model, device, loader, args, smalltest=False):
 
             dif = y.int() - preds.int()
             miss = dif > 0.0  # classifier didn't activated target neuron
-            
-            weight = ( y.sum() / y.numel()) + 0.005
+
+            weight = (y.sum() / y.numel()) + 0.005
             loss_weight = y * (1 - weight) + weight
-            eval["Loss Weight"] += [
-                weight.item()
-            ]
+            eval["Loss Weight"] += [weight.item()]
             eval["Loss"] += [
                 torch.nn.functional.binary_cross_entropy(
                     probs, y, weight=loss_weight
@@ -82,18 +84,17 @@ def train(model, train_loader, valid_loader, args, device, verbal=True):
     no_improve = 0
 
     for e in range(args.epochs):
-
         for batch_idx, batch in enumerate(tqdm(train_loader)):
             model.train()
             x, y = batch
             optimizer.zero_grad()
 
             y = y.float().to(device)
-            y = generate_label(y, args.k)
+            y = generate_label(y)
             logits = model(x.to(device))
             probs = logits.sigmoid()
 
-            weight = ( y.sum() / y.numel()) + 0.005
+            weight = (y.sum() / y.numel()) + 0.005
             loss_weight = y * (1 - weight) + weight
             loss = torch.nn.functional.binary_cross_entropy(
                 probs, y, weight=loss_weight
