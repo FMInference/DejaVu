@@ -7,7 +7,7 @@ ARGS="--model-name /lustre/fsw/nvresearch/ldm/diffusion/checkpoint/opt-175b-new 
 --model-type opt-save \
 --seed 42 \
 --fp16 \
---num-layers 16 \
+--num-layers 12 \
 --max-layers 96 \
 --budget 22800 \
 --num-iters 2000 \

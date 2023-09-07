@@ -19,7 +19,7 @@ ARGS="--model-name $PATH_TO_MODEL_CHECKPOINT \
 --model-type opt-ml-att-sparse \
 --seed 42 \
 --fp16 \
---num-layers 16 \
+--num-layers 12 \
 --max-layers 96 \
 --budget 10800 \
 --num-iters 1000 \
