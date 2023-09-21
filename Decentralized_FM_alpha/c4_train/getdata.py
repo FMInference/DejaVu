@@ -33,6 +33,6 @@ for idx, doc in enumerate(tqdm(dataset)):
         "top_p": 1,
     }
     dump_jsonl([data], path, append=True)
-if idx == 10000:
-    print(idx)
-    exit()
+    if idx == 500:
+        print("Collected 500 samples")
+        break

@@ -29,7 +29,7 @@ To get started, you need to first collect the training data by runing model infe
 ```
 DejaVu/Decentralized_FM_alpha/run_infer_opt_175b_collect_sp_data.sh
 ```
-You need to specify the model checkpoint and data path. To get data, we provide the a script in DejaVu/Decentralized_FM_alpha/c4_train/get_data.py. And to convert the model checkpoint from huggingface, we provide a script in DejaVu/Decentralized_FM_alpha/convert_opt_checkpoint.py
+You need to specify the model checkpoint and data path. To get data, we provide the a script in DejaVu/Decentralized_FM_alpha/c4_train/get_data.py. By default, we sumsample 500 samples in the script. And to convert the model checkpoint from huggingface, we provide a script in DejaVu/Decentralized_FM_alpha/convert_opt_checkpoint.py
 
 Also, you can specify where to store the training data inside DejaVu/Decentralized_FM_alpha/modules/hf_opt_module_save.py 
 
