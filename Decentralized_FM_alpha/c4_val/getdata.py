@@ -23,7 +23,7 @@ for idx, doc in enumerate(tqdm(dataset)):
         "best_of": 1,
         "echo": True,
         "logprobs": 1,
-        "max_tokens": 10,
+        "max_tokens": 0,
         "model": "opt-175b",
         "n": 1,
         "prompt": doc["text"],
