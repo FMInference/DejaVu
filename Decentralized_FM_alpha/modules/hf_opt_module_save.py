@@ -234,17 +234,6 @@ class OPTAttention(_OPTAttention):
 
         bsz, tgt_len, _ = hidden_states.size()
 
-        if self.fp_i < self.fp_query.shape[0]:
-            _hidden_states = hidden_states.view(-1, hidden_states.size(-1))[
-                mask.bool().view(-1)
-            ]
-            begin, end = self.fp_i, min(
-                self.fp_i + _hidden_states.size(0), self.fp_query.shape[0]
-            )
-            self.fp_query[begin:end] = (
-                _hidden_states[: end - begin].detach().cpu().numpy()
-            )
-
         # get query proj
         query_states = self.q_proj(hidden_states) * self.scaling
         # get key, value proj
@@ -359,8 +348,6 @@ class OPTAttention(_OPTAttention):
             attn_output_norm = attn_output_norm.transpose(2, 1).view(
                 -1, self.num_heads
             )[mask.bool().view(-1)]
-
-            assert len(_hidden_states) == len(attn_output_norm)
 
             begin, end = self.fp_i, min(
                 self.fp_i + attn_output_norm.size(0), self.fp_label.shape[0]
