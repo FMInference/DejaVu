@@ -904,3 +904,172 @@ class ParallelMHA(nn.Module):
         else:
             out = self.out_proj(context)
             return out
+
+
+class ParallelMHADejavu(nn.Module):
+    """Multi-head self-attention and cross-attention"""
+
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        process_group,
+        sp_kwargs,
+        bias=True,
+        dropout=0.0,
+        softmax_scale=None,
+        causal=False,
+        layer_idx=None,
+        rotary_emb_dim=0,
+        rotary_emb_scale_base=0,
+        use_flash_attn=False,
+        checkpointing=False,
+        sequence_parallel=True,
+        device=None,
+        dtype=None,
+    ) -> None:
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        assert sp_kwargs != None, "sparse predictor parameters are not passed in."
+        self.embed_dim = embed_dim
+        self.causal = causal
+        self.layer_idx = layer_idx
+        self.rotary_emb_dim = rotary_emb_dim
+        self.use_flash_attn = use_flash_attn
+        self.checkpointing = checkpointing
+
+        self.num_heads = num_heads
+        assert (
+            self.embed_dim % num_heads == 0
+        ), "self.kdim must be divisible by num_heads"
+        self.head_dim = self.embed_dim // num_heads
+
+        if self.rotary_emb_dim > 0:
+            assert RotaryEmbedding is not None, "rotary_emb is not installed"
+            self.rotary_emb = RotaryEmbedding(
+                self.rotary_emb_dim, scale_base=rotary_emb_scale_base, device=device
+            )
+
+        if ColumnParallelLinear is None or RowParallelLinear is None:
+            raise ImportError("fused_dense is not installed")
+        self.num_head_per_node = self.num_heads // process_group.size()
+        self.Wqkv = ColumnParallelLinear(
+            embed_dim,
+            3 * embed_dim,
+            process_group,
+            bias=bias,
+            sequence_parallel=sequence_parallel,
+            **factory_kwargs,
+        )
+        inner_attn_cls = FlashSelfAttention if use_flash_attn else SelfAttention
+        inner_cross_attn_cls = FlashCrossAttention if use_flash_attn else CrossAttention
+        self.inner_attn = inner_attn_cls(
+            causal=causal, softmax_scale=softmax_scale, attention_dropout=dropout
+        )
+        self.inner_cross_attn = inner_cross_attn_cls(
+            causal=causal, softmax_scale=softmax_scale, attention_dropout=dropout
+        )
+        # output projection always have the bias (for now)
+        self.out_proj = RowParallelLinearNoReduce(
+            embed_dim,
+            embed_dim,
+            process_group,
+            sequence_parallel=sequence_parallel,
+            **factory_kwargs,
+        )
+        self.process_group = process_group
+
+        self.sp_stream = torch.cuda.Stream(device="cuda", priority=0)
+        self.event_out = torch.cuda.Event(enable_timing=False, blocking=False)
+        self.event_mlp_sp = torch.cuda.Event(enable_timing=False, blocking=False)
+
+    def forward(
+        self, x, mlp_sp_logit=None, seqlen=None, inference_params=None, **kwargs
+    ):
+        """
+        Arguments:
+            x: (batch, seqlen, hidden_dim) (where hidden_dim = num heads * head dim) if seqlen=None.
+                If seqlen is not None, x is (batch * seqlen, hidden_dim). This is so that when we
+                split x during sequence parallel, we split the batch * seqlen dimension
+                (in case batch is small).
+            mlp_sp_logit: (b, 4*hidden_dim), calculate topk neuron to activate for MLP
+            head_idx: (b, k), k is the number of selected heads.
+        """
+        curr_stream = torch.cuda.current_stream()
+        qkv = self.Wqkv(x)
+
+        if seqlen is None:
+            qkv = rearrange(
+                qkv, "b s (three h d) -> b s three h d", three=3, d=self.head_dim
+            )
+        else:
+            qkv = rearrange(
+                qkv,
+                "(b s) (three h d) -> b s three h d",
+                s=seqlen,
+                three=3,
+                d=self.head_dim,
+            )
+        if inference_params is None:
+            if self.rotary_emb_dim > 0:
+                qkv = self.rotary_emb(qkv)
+            if not self.checkpointing:
+                context = self.inner_attn(qkv, **kwargs)
+            else:
+                context = torch.utils.checkpoint.checkpoint(
+                    self.inner_attn, qkv, **kwargs
+                )
+        else:
+            if (
+                not inference_params.fused_ft_kernel
+            ) or inference_params.sequence_len_offset == 0:
+                if self.rotary_emb_dim > 0:
+                    qkv = self.rotary_emb(
+                        qkv, seqlen_offset=inference_params.sequence_len_offset
+                    )
+                q = qkv[:, :, 0]
+                assert (
+                    self.layer_idx is not None
+                ), "Generation requires layer_idx in the constructor"
+                kv = _update_kv_cache(qkv[:, :, 1:], inference_params, self.layer_idx)
+                # If we're processing the prompt, causal=None (use self.causal).
+                # If we're decoding, then causal=False.
+                causal = None if inference_params.sequence_len_offset == 0 else False
+                context = self.inner_cross_attn(q, kv, causal=causal)
+            else:
+                assert inference_params.fused_ft_kernel
+                assert ft_attention is not None
+                k_cache, v_cache = inference_params.key_value_memory_dict[
+                    self.layer_idx
+                ]
+                context = ft_attention.single_query_attention(
+                    *rearrange(qkv, "b 1 three h d -> b three h d").unbind(dim=1),
+                    # *inference_params.key_value_memory_dict[self.layer_idx],
+                    k_cache,
+                    v_cache,
+                    inference_params.lengths_per_sample,
+                    inference_params.sequence_len_offset,
+                    self.rotary_emb_dim,
+                )
+                context = rearrange(context, "b h d -> b 1 h d")
+        if seqlen is None:
+            context = rearrange(context, "b s h d -> b s (h d)")
+        else:
+            context = rearrange(context, "b s h d -> (b s) (h d)")
+
+        out = self.out_proj(context)
+        curr_stream.record_event(self.event_out)
+
+        out = all_reduce(out, self.process_group)
+
+        mlp_idx = None
+        with torch.cuda.stream(self.sp_stream):
+            self.sp_stream.wait_event(self.event_out)
+            if mlp_sp_logit != None:
+                _, mlp_idx = mlp_sp_logit.topk(self.mlp_k, sorted=False)
+
+            self.sp_stream.record_event(self.event_mlp_sp)
+
+        curr_stream.wait_event(self.self.event_mlp_sp)
+
+        return out, mlp_idx

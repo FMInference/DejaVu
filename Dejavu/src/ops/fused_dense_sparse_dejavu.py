@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributed import ProcessGroup
 from torch.cuda.amp import custom_bwd, custom_fwd
+from src.models.modules.sparse_predictor import ParallelSP
 
 # import fused_dense_cuda  # from apex
 
@@ -731,3 +732,174 @@ class ParallelFusedMLP(nn.Module):
         )
         reduce_fn = reduce_scatter if self.sequence_parallel else all_reduce
         return reduce_fn(out, self.process_group)
+
+
+class RowParallelLinearNoReduce(nn.Linear):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        process_group: ProcessGroup,
+        bias: bool = True,
+        sequence_parallel=True,
+        device=None,
+        dtype=None,
+    ) -> None:
+        world_size = torch.distributed.get_world_size(process_group)
+        rank = torch.distributed.get_rank(process_group)
+        if in_features % world_size != 0:
+            raise ValueError(
+                f"in_features ({in_features}) must be divisible by "
+                f"world_size ({world_size})"
+            )
+        # Only rank 0 will have bias
+        super().__init__(
+            in_features // world_size,
+            out_features,
+            bias=bias and rank == 0,
+            device=device,
+            dtype=dtype,
+        )
+        self.process_group = process_group
+        self.sequence_parallel = sequence_parallel
+
+    def forward(self, x):
+        """
+        We're doing Tensor Parallel with sequence parallelism: we do the matmul and then
+        a reduce_scatter of the result.
+        """
+        out = fused_dense_func(x, self.weight, self.bias)
+        return out
+
+
+class ParallelFusedMLPDejavu(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        hidden_features,
+        sp_kwargs,
+        out_features=None,
+        activation="gelu_approx",
+        layer_idx=None,
+        process_group: ProcessGroup = None,
+        bias1=True,
+        bias2=True,
+        sequence_parallel=True,
+        checkpoint_lvl=0,
+        heuristic="auto",
+        device=None,
+        dtype=None,
+    ):
+        """
+        process_group is required. We're doing Tensor Parallel with sequence parallelism:
+        we do an all_gather of x before doing the matmul, gelu, then matmul.
+        Finally we do a reduce_scatter of the output.
+
+        checkpoint_lvl (increasing lvl means slower but more memory saving):
+            0: no recomputation in the bwd
+            1: recompute gelu_out in the bwd
+            2: recompute pre_act and gelu_out in the bwd
+        heuristic:
+            -1: don't fuse gemm + gelu (separate kernel)
+            0..4: use this heuristic for the algo section in the fused gemm + gelu
+            'auto': heuristic will be picked automatically:
+                For CUDA >= 11.8, we set heuristic=0 for both fp16 and bf16 for best perf.
+                For CUDA <= 11.7, we set heuristic=1 for fp16 and heuristic=-1 for bf16.
+        """
+        assert checkpoint_lvl in [0, 1, 2]
+        assert activation in ["gelu_approx", "relu"]
+        assert process_group is not None
+        assert sp_kwargs != None, "sparse predictor parameters are not passed in."
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        if out_features is None:
+            out_features = in_features
+        self.activation = activation
+        self.process_group = process_group
+        self.sequence_parallel = sequence_parallel
+        self.checkpoint_lvl = checkpoint_lvl
+        self.heuristic = heuristic
+        self.fc1 = ColumnParallelLinear(
+            in_features, hidden_features, process_group, bias=bias1, **factory_kwargs
+        )
+        self.fc2 = RowParallelLinear(
+            hidden_features, out_features, process_group, bias=bias2, **factory_kwargs
+        )
+        self.layer_idx = layer_idx
+        # sparse related
+        self.fc2_weight_t = self.register_buffer("fc2_weigth_t", None)
+        self.sp = ParallelSP(
+            layer_idx=layer_idx,
+            device=device,
+            dtype=dtype,
+            process_group=process_group,
+            sequence_parallel=sequence_parallel,
+            **sp_kwargs,
+        )
+        self.sp_stream = torch.cuda.Stream(device="cuda", priority=0)
+        self.event_mlp = torch.cuda.Event(enable_timing=False, blocking=False)
+        self.event_mlp_sp = torch.cuda.Event(enable_timing=False, blocking=False)
+
+    def forward(self, x, residual, idx=None):
+        if self.heuristic == "auto":
+            dtype = (
+                x.dtype
+                if not torch.is_autocast_enabled()
+                else torch.get_autocast_gpu_dtype()
+            )
+            if self.activation == "gelu_approx":
+                cuda_ver = tuple(map(int, torch.version.cuda.split(".")))
+                heuristic = (
+                    0 if cuda_ver >= (11, 8) else (1 if dtype == torch.float16 else -1)
+                )
+            else:
+                heuristic = 0
+        else:
+            heuristic = self.heuristic
+        curr_stream = torch.cuda.current_stream()
+        do_token_generation = x.size(1) == 1
+        if idx != None:
+            assert x.size(1) == 1
+            from einops import rearrange
+            from src.ops.triton.gather_gemv import mlp_sparse
+
+            if self.fc2_weight_t is None:
+                self.fc2_weight_t = self.fc2.weight.t().contiguous()
+            out = mlp_sparse(
+                rearrange(x, "b 1 d -> b d"),
+                self.fc1.weight,
+                self.fc2_weight_t,
+                idx,
+                self.fc1.bias,
+                self.fc2.bias,
+            )
+            out = rearrange(out, "b d -> b 1 d")
+        else:
+            out = fused_mlp_func(
+                x,
+                self.fc1.weight,
+                self.fc2.weight,
+                self.fc1.bias,
+                self.fc2.bias,
+                activation=self.activation,
+                save_pre_act=self.training,
+                checkpoint_lvl=self.checkpoint_lvl,
+                heuristic=heuristic,
+                process_group=self.process_group,
+                sequence_parallel=self.sequence_parallel,
+            )
+        curr_stream.record_event(self.event_mlp)
+        reduce_fn = reduce_scatter if self.sequence_parallel else all_reduce
+
+        out = reduce_fn(out, self.process_group)
+
+        with torch.cuda.stream(self.sp_stream):
+            self.sp_stream.wait_event(self.event_mlp)
+            mlp_logit = None
+            if do_token_generation:
+                mlp_logit = self.sp(residual)
+            self.sp_stream.record_event(self.event_mlp_sp)
+
+        curr_stream.wait_event(self.event_mlp_sp)
+
+        return out, mlp_logit
