@@ -95,13 +95,25 @@ For best performance, please use docker. We provide a dockerfile with all requir
 
 **Dense Model Latency Benchmark**
 To benchmark latency with dense model, run
+
 ```torchrun --nproc_per_node=$NUM_GPUs benchmark_generation_opt.py --model-name $MODEL_NAME ```
 
-Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_generation_opt.py with corrospondence to $MODEL_NAME
+Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_generation_opt.py with correspondence to $MODEL_NAME
 
 
 **Sparse Model Latency Benchmark**
 
+Sparse MLP Block
+To benchmark latency with sparse MLP block model, run
+
+```torchrun --nproc_per_node=$NUM_GPUs benchmark_generation_opt.py --model-name $MODEL_NAME --mlp-K $NUM_ACTIVE_NEURONS```
+
+Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_generation_opt.py with correspondence to $MODEL_NAME
+$NUM_ACTIVE_NEURONS indicate how many neurons to activate in the first fully connected layer in each MLP block. 
+
+For example, for OPT-175B, mlp-k is set to 49152 by default, which will perform dense computation. Set mlp-K 4096 will perform sparse computation. We recommend setting mlp-K to be multiplied by 128.
+
+Sparse Attention Blcok
 Coming soon
 
 
