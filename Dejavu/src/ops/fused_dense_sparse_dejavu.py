@@ -11,7 +11,6 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.distributed import ProcessGroup
 from torch.cuda.amp import custom_bwd, custom_fwd
-from src.models.modules.sparse_predictor import ParallelSP
 
 # import fused_dense_cuda  # from apex
 
@@ -29,6 +28,52 @@ from flash_attn.utils.distributed import reduce_scatter, all_reduce
 @torch.jit.script
 def relu_bwd(g, x):
     return torch.where(x >= 0, g, 0.0).to(dtype=x.dtype)
+
+
+class ParallelSP(nn.Module):
+    """
+    A Near Neighbor Classifier
+    """
+
+    def __init__(
+        self,
+        layer_idx=None,
+        embed_dim=None,
+        low_rank_dim=None,
+        out_dim=None,
+        K=None,
+        process_group=None,
+        sequence_parallel=False,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        assert (
+            process_group is not None
+        ), "sparse predictor only implemented with parallel for now"
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.process_group = process_group
+        self.layer_idx = layer_idx
+        self.embed_dim = embed_dim
+        self.fc0 = nn.Linear(
+            embed_dim, low_rank_dim, bias=False, device=device, dtype=dtype
+        )
+        self.out = out_dim // self.process_group.size()
+        self.fc1 = ColumnParallelLinear(
+            low_rank_dim,
+            out_dim,
+            process_group,
+            bias=False,
+            sequence_parallel=sequence_parallel,
+            **factory_kwargs,
+        )
+        self.K = K // self.process_group.size()
+
+    def forward(self, x):
+        x = self.fc0(x.view(self.embed_dim))  # b x 1000
+        x = self.fc1(x)
+        return x
 
 
 class FusedDenseFunc(torch.autograd.Function):

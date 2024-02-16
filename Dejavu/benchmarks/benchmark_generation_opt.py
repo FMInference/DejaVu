@@ -11,7 +11,7 @@ from apex.transformer import parallel_state
 from src.utils.dejavu_util import remap_state_dict_opt, shard_state_dict_tp
 
 MODEL_PATH = {
-    "facebook/opt-30b": "",
+    "facebook/opt-30b": "/root/LSHOPT/opt-30b/",
 }
 parser = argparse.ArgumentParser(description="OPT generation benchmarking")
 parser.add_argument("--promptlen", type=int, default=128)
@@ -78,14 +78,14 @@ torch.manual_seed(0)
 # https://huggingface.co/docs/transformers/model_doc/opt
 tokenizer = AutoTokenizer.from_pretrained("facebook/opt-66b", use_fast=False)
 
-input_ids = torch.randint(0, 100, (1, args.promptlen), dtype=torch.long, device="cuda")
-max_length = input_ids.shape[1] + args.genlen
+# input_ids = torch.randint(0, 100, (1, args.promptlen), dtype=torch.long, device="cuda")
+# max_length = input_ids.shape[1] + args.genlen
 
-# input_ids = tokenizer(
-#     "The daily life of a Computer Science PhD student is intellectually stimulating and ",
-#     return_tensors="pt",
-# ).input_ids.to(device=device)
-# max_length = 100
+input_ids = tokenizer(
+    "What is the meaning of life?",
+    return_tensors="pt",
+).input_ids.to(device=device)
+max_length = input_ids.shape[1] + args.genlen
 
 # Capture graph outside the timing loop
 batch_size, seqlen_og = input_ids.shape

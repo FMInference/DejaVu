@@ -53,7 +53,6 @@ if args.model_name == "opt-175b":
 else:
     config = OPTConfig.from_pretrained(args.model_name)
 config = opt_config_to_gpt2_config(config)
-config.num_hidden_layers = 3
 # Only prenorm supports residual_in_fp32
 # config.residual_in_fp32 = getattr(config, 'prenorm', True)
 config.use_flash_attn = True
