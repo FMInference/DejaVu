@@ -106,7 +106,7 @@ Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_genera
 Sparse MLP Block
 To benchmark latency with sparse MLP block model, run
 
-```torchrun --nproc_per_node=$NUM_GPUs benchmark_generation_opt.py --model-name $MODEL_NAME --mlp-K $NUM_ACTIVE_NEURONS```
+```torchrun --nproc_per_node=$NUM_GPUs benchmark_generation_opt_mlp_sparse.py --model-name $MODEL_NAME --mlp-K $NUM_ACTIVE_NEURONS```
 
 Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_generation_opt.py with correspondence to $MODEL_NAME
 $NUM_ACTIVE_NEURONS indicate how many neurons to activate in the first fully connected layer in each MLP block. 

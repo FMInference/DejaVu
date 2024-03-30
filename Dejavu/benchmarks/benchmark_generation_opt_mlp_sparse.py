@@ -4,7 +4,7 @@ import time
 import torch
 from transformers import OPTConfig, AutoTokenizer
 
-from src.models.gpt_dejavu import GPTLMHeadModel
+from src.models.gpt_mlp_sparse import GPTLMHeadModel
 
 from flash_attn.models.opt import opt_config_to_gpt2_config
 from flash_attn.utils.generation import update_graph_cache
