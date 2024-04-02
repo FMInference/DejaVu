@@ -221,9 +221,9 @@ def create_mixer_cls(
         l1 = int(0.35 * (config.num_hidden_layers))
         l2 = int(0.65 * (config.num_hidden_layers))
         if l1 <= layer_idx and layer_idx >= l2:
-            att_k = att_ks[1]
-        else:
             att_k = att_ks[0]
+        else:
+            att_k = att_ks[1]
 
         assert (
             att_k >= torch.distributed.get_world_size()

@@ -113,10 +113,15 @@ $NUM_ACTIVE_NEURONS indicate how many neurons to activate in the first fully con
 
 For example, for OPT-175B, mlp-k is set to 49152 by default, which will perform dense computation. Set mlp-K 4096 will perform sparse computation. We recommend setting mlp-K to be multiplied by 128.
 
-Sparse Attention Blcok
-Coming soon
+Sparse MLP + Sparse Attention Block
 
+To benchmark latency with sparse MLP + sparse Attention block model, run
 
+```torchrun --nproc_per_node=$NUM_GPUs benchmark_generation_opt_dejavu.py --model-name $MODEL_NAME --mlp-K $NUM_ACTIVE_NEURONS --att-K1 $NUM_ACTIVE_ATT_1 --att-K2 $NUM_ACTIVE_ATT_2```
+
+Please specify the model checkpoint in DejaVu/Dejavu/benchmarks/benchmark_generation_opt.py with correspondence to $MODEL_NAME
+$NUM_ACTIVE_NEURONS indicate how many neurons to activate in the first fully connected layer in each MLP block. 
+$NUM_ACTIVE_ATT_1 and $NUM_ACTIVE_ATT_2 indicate how many attention head to activate. Our ovservation suggests that first 1/3 and last 1/3 layers($NUM_ACTIVE_ATT_1) are less sparse while middle layers($NUM_ACTIVE_ATT_2) are more sparse. We set up two threshold for different sparsity. 
 
 ## Citation
 

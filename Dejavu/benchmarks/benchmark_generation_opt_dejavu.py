@@ -85,7 +85,7 @@ config.att_sparse = False
 """ 
 sparse mlp config
 """
-if args.mlp_K <= config.n_inner:
+if args.mlp_K < config.n_inner:
     config.mlp_sparse = True
     config.mlp_K = args.mlp_K
     config.mlp_sp_dim = 1000
@@ -93,12 +93,13 @@ if args.mlp_K <= config.n_inner:
 """
 sparse att config
 """
-if args.att_K1 <= config.n_head or args.att_K2 <= config.n_head:
+if args.att_K1 < config.n_head or args.att_K2 < config.n_head:
     print("set sparse attention config")
     config.att_sparse = True
     config.att_K = [args.att_K1, args.att_K2]
     config.att_sp_dim = 512
 
+assert config.att_sparse and config.mlp_sparse == True
 
 from apex.transformer import parallel_state
 
