@@ -709,6 +709,7 @@ class ParallelFusedMLP(nn.Module):
         heuristic="auto",
         device=None,
         dtype=None,
+        sp_kwargs=None,
     ):
         """
         process_group is required. We're doing Tensor Parallel with sequence parallelism:

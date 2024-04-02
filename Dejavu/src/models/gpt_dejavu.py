@@ -16,7 +16,7 @@ from transformers import GPT2Config
 
 from einops import rearrange
 
-from src.models.modules.mha_dejavu import MHA, ParallelMHA, ParallelMHADejavu
+from src.models.modules.mha_dejavu import MHA, ParallelMHA, ParallelMHASparseAttMlp
 
 from src.ops.fused_dense_sparse_dejavu import (
     FusedMLP,
@@ -24,8 +24,7 @@ from src.ops.fused_dense_sparse_dejavu import (
     ParallelFusedMLPDejavu,
 )
 
-from src.models.modules.block_dejavu import Block, BlockDejavu
-
+from src.models.modules.block_dejavu import Block, BlockMlpAttSparse
 
 from flash_attn.modules.embedding import GPT2Embeddings, ParallelGPT2Embeddings
 from flash_attn.utils.distributed import sync_shared_params, all_gather_raw
@@ -188,13 +187,15 @@ def create_mixer_cls(
         assert process_group is None, "TensorParallel MHA requires fused_bias_fc"
 
     mlp_sparse = getattr(config, "mlp_sparse", False)
+    att_sparse = getattr(config, "att_sparse", False)
+
     # if not parallel, do simple MHA
     if process_group is None:
         mha_cls = MHA
     else:
-        # if sparse MLP, initiate sparsity MHA, in which mlp sparse predictor is parallel with the all reduce
+        # if sparse MLP&ATT, initiate sparsity MHA,
         # else initialize original MHA
-        mha_cls = ParallelMHADejavu if mlp_sparse else ParallelMHA
+        mha_cls = ParallelMHASparseAttMlp if mlp_sparse or att_sparse else ParallelMHA
 
     serial_kwargs = (
         {"fused_bias_fc": fused_bias_fc, "dwconv": dwconv}
@@ -209,6 +210,32 @@ def create_mixer_cls(
         if process_group is not None
         else {}
     )
+    sp_kwargs = None
+    if att_sparse:
+        try:
+            att_ks = getattr(config, "att_K")
+        except:
+            raise "Dejavu Attention sparse is activated but missing argument. "
+
+        # default high sparsity in first 1/3 and last 1/3 layers
+        l1 = int(0.35 * (config.num_hidden_layers))
+        l2 = int(0.65 * (config.num_hidden_layers))
+        if l1 <= layer_idx and layer_idx >= l2:
+            att_k = att_ks[1]
+        else:
+            att_k = att_ks[0]
+
+        assert (
+            att_k >= torch.distributed.get_world_size()
+        ), "At least one head on each gpu"
+
+        sp_kwargs = {
+            "embed_dim": config.hidden_size,
+            "low_rank_dim": config.att_sp_dim,
+            "out_dim": config.num_attention_heads,
+            "K": att_k,
+        }
+
     mixer_cls = partial(
         mha_cls,
         num_heads=config.num_attention_heads,
@@ -219,6 +246,7 @@ def create_mixer_cls(
         rotary_emb_dim=rotary_emb_dim,
         rotary_emb_scale_base=rotary_emb_scale_base,
         use_flash_attn=use_flash_attn,
+        sp_kwargs=sp_kwargs,
         **serial_kwargs,
         **parallel_kwargs,
         **factory_kwargs,
@@ -284,6 +312,7 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             if process_group is not None
             else {}
         )
+
         mlp_cls = partial(
             mlp_cls,
             hidden_features=inner_dim,
@@ -318,8 +347,8 @@ def create_block(config, layer_idx=None, process_group=None, device=None, dtype=
     )
     prenorm = getattr(config, "prenorm", True)
 
-    if config.mlp_sparse:
-        block = BlockDejavu(
+    if config.mlp_sparse or config.att_sparse:
+        block = BlockMlpAttSparse(
             config.hidden_size,
             mixer_cls,
             mlp_cls,
@@ -541,21 +570,26 @@ class GPTModel(GPTPreTrainedModel):
         if inference_params is not None:
             mixer_kwargs["inference_params"] = inference_params
 
-        # mlp logit needs to passed into next layer
+        # attention idx & mlp logit needs to passed into next layer
         if self.sparse:
             next_mlp_sp_logit = None
+            next_att_idx = None
+            i = 0
             for layer in self.layers:
                 if self.prenorm:
                     (
                         hidden_states,
                         residual,
                         next_mlp_sp_logit,
+                        next_att_idx,
                     ) = layer(
                         hidden_states,
                         residual,
+                        head_idx=next_att_idx,
                         mlp_sp_logit=next_mlp_sp_logit,
                         mixer_kwargs=mixer_kwargs,
                     )
+                    i += 1
                 else:
                     raise NotImplementedError
         else:
@@ -651,6 +685,7 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         hidden_states = self.transformer(
             input_ids, position_ids=position_ids, inference_params=inference_params
         )
+
         if self.project_out is not None:
             hidden_states = self.project_out(hidden_states)
         lm_logits = self.lm_head(hidden_states)

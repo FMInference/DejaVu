@@ -28,6 +28,7 @@ try:
         FusedDense,
         ColumnParallelLinear,
         RowParallelLinear,
+        RowParallelLinearNoReduce,
     )
 except ImportError:
     FusedDense, ColumnParallelLinear, RowParallelLinear, RowParallelLinearNoReduce = (
@@ -914,7 +915,7 @@ class ParallelMHADejavu(nn.Module):
         embed_dim,
         num_heads,
         process_group,
-        sp_kwargs,
+        sp_kwargs=None,
         bias=True,
         dropout=0.0,
         softmax_scale=None,
@@ -930,7 +931,6 @@ class ParallelMHADejavu(nn.Module):
     ) -> None:
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
-        assert sp_kwargs != None, "sparse predictor parameters are not passed in."
         self.embed_dim = embed_dim
         self.causal = causal
         self.layer_idx = layer_idx
@@ -1070,6 +1070,442 @@ class ParallelMHADejavu(nn.Module):
 
             self.sp_stream.record_event(self.event_mlp_sp)
 
-        curr_stream.wait_event(self.self.event_mlp_sp)
+        curr_stream.wait_event(self.event_mlp_sp)
 
         return out, mlp_idx
+
+
+class ParallelSP(nn.Module):
+    """
+    A Near Neighbor Classifier
+    """
+
+    def __init__(
+        self,
+        layer_idx=None,
+        embed_dim=None,
+        low_rank_dim=None,
+        out_dim=None,
+        K=None,
+        process_group=None,
+        sequence_parallel=False,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        assert (
+            process_group is not None
+        ), "sparse predictor only implemented with parallel for now"
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+        self.process_group = process_group
+        self.layer_idx = layer_idx
+        self.embed_dim = embed_dim
+        self.fc0 = nn.Linear(
+            embed_dim, low_rank_dim, bias=False, device=device, dtype=dtype
+        )
+        self.out = out_dim // self.process_group.size()
+        self.fc1 = ColumnParallelLinear(
+            low_rank_dim,
+            out_dim,
+            process_group,
+            bias=False,
+            sequence_parallel=sequence_parallel,
+            **factory_kwargs,
+        )
+        self.K = K // self.process_group.size()
+
+    def forward(self, x):
+        x = self.fc0(x.view(self.embed_dim))  # b x 1000
+        x = self.fc1(x)
+        return x
+
+
+class ParallelTracker(nn.Module):
+    def __init__(self, process_group, num_head_per_node, seq_len, device=None) -> None:
+        self.process_group = process_group
+        self.num_head_per_node = num_head_per_node
+        self.tracker = torch.arange(
+            0, seq_len, dtype=torch.int32, device=device
+        ).repeat(self.num_head_per_node, 1)
+        super().__init__()
+
+    def get_batch_idx(self, head_idx, seq_idx):
+        self.tracker = self.tracker.to(head_idx.device)
+        return self.tracker[head_idx][:, :seq_idx]
+
+    def update(self, head_idx, seq_idx, compute_idx):
+        # mark all compute position as -1
+
+        temp = self.tracker[:, : seq_idx + 1][head_idx]
+        temp[compute_idx != -1] = -1
+        self.tracker[:, : seq_idx + 1][head_idx] = temp
+
+        # self.tracker[:, seq_idx][head_idx] = -1
+
+    def reset(self, device):
+        self.tracker = torch.arange(0, 16, dtype=torch.int32, device=device).repeat(
+            self.num_head_per_node, 1
+        )
+
+
+class ParallelMHASparseAttMlp(nn.Module):
+    """Multi-head self-attention and cross-attention"""
+
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        process_group,
+        sp_kwargs,
+        bias=True,
+        dropout=0.0,
+        softmax_scale=None,
+        causal=False,
+        layer_idx=None,
+        rotary_emb_dim=0,
+        rotary_emb_scale_base=0,
+        use_flash_attn=False,
+        checkpointing=False,
+        sequence_parallel=True,
+        device=None,
+        dtype=None,
+    ) -> None:
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        assert sp_kwargs != None, "sparse predictor parameters are not passed in."
+        self.embed_dim = embed_dim
+        self.causal = causal
+        self.layer_idx = layer_idx
+        self.rotary_emb_dim = rotary_emb_dim
+        self.use_flash_attn = use_flash_attn
+        self.checkpointing = checkpointing
+        self.sp_kwargs = sp_kwargs
+        self.num_heads = num_heads
+        assert (
+            self.embed_dim % num_heads == 0
+        ), "self.kdim must be divisible by num_heads"
+        self.head_dim = self.embed_dim // num_heads
+
+        if self.rotary_emb_dim > 0:
+            assert RotaryEmbedding is not None, "rotary_emb is not installed"
+            self.rotary_emb = RotaryEmbedding(
+                self.rotary_emb_dim, scale_base=rotary_emb_scale_base, device=device
+            )
+
+        if ColumnParallelLinear is None or RowParallelLinear is None:
+            raise ImportError("fused_dense is not installed")
+        self.num_head_per_node = self.num_heads // process_group.size()
+        self.Wqkv = ColumnParallelLinear(
+            embed_dim,
+            3 * embed_dim,
+            process_group,
+            bias=bias,
+            sequence_parallel=sequence_parallel,
+            **factory_kwargs,
+        )
+        inner_attn_cls = FlashSelfAttention if use_flash_attn else SelfAttention
+        inner_cross_attn_cls = FlashCrossAttention if use_flash_attn else CrossAttention
+        self.inner_attn = inner_attn_cls(
+            causal=causal, softmax_scale=softmax_scale, attention_dropout=dropout
+        )
+        self.inner_cross_attn = inner_cross_attn_cls(
+            causal=causal, softmax_scale=softmax_scale, attention_dropout=dropout
+        )
+        # output projection always have the bias (for now)
+        self.out_proj = RowParallelLinearNoReduce(
+            embed_dim,
+            embed_dim,
+            process_group,
+            sequence_parallel=sequence_parallel,
+            **factory_kwargs,
+        )
+        self.process_group = process_group
+
+        """sparse related"""
+
+        # sparse predictor related
+        (
+            self.head_idx_qkv_idx_mapping,
+            self.head_idx_out_idx_mapping,
+        ) = self.generate_idx_mapping(device)
+
+        self.out_proj_weight_t = self.register_buffer("out_proj_weight_t", None)
+        self.sp = ParallelSP(
+            layer_idx=layer_idx,
+            device=device,
+            dtype=dtype,
+            process_group=process_group,
+            sequence_parallel=sequence_parallel,
+            **sp_kwargs,
+        )
+        # cache to store previous x for up to past 16 tokens to recompute KV for skiped head
+        self.x_cache = torch.empty((16, embed_dim), dtype=torch.float16, device=device)
+
+        self.to_compute_token_idx = ParallelTracker(
+            process_group=process_group,
+            num_head_per_node=self.num_head_per_node,
+            seq_len=16,
+        )
+        # generation counter used to clear x_cache
+        self.counter = 0
+        # generation counter used to copy kv cache
+        self.cache_offset = None
+
+        self.sp_stream = torch.cuda.Stream(device="cuda", priority=0)
+        self.event_qkv = torch.cuda.Event(enable_timing=False, blocking=False)
+        self.event_out = torch.cuda.Event(enable_timing=False, blocking=False)
+        self.event_mlp_sp = torch.cuda.Event(enable_timing=False, blocking=False)
+        self.event_att_sp = torch.cuda.Event(enable_timing=False, blocking=False)
+
+    def generate_idx_mapping(self, device):
+        # assert == 128 * (96/8) * 3, 12288
+        q_idx = torch.arange(
+            0,
+            self.embed_dim // torch.distributed.get_world_size(),
+            dtype=torch.long,
+            device=device,
+        ).reshape(-1, self.head_dim)
+        k_idx = q_idx.clone() + 1 * (
+            self.embed_dim // torch.distributed.get_world_size()
+        )
+
+        v_idx = q_idx.clone() + 2 * (
+            self.embed_dim // torch.distributed.get_world_size()
+        )
+
+        out_idx = q_idx.clone()
+
+        qkv_idx = torch.cat((q_idx, k_idx, v_idx), dim=1)
+
+        return qkv_idx, out_idx
+
+    def forward(
+        self,
+        x,
+        residual,
+        head_idx=None,
+        mlp_sp_logit=None,
+        seqlen=None,
+        inference_params=None,
+        **kwargs
+    ):
+        """
+        Arguments:
+            x: (batch, seqlen, hidden_dim) (where hidden_dim = num heads * head dim) if seqlen=None.
+                If seqlen is not None, x is (batch * seqlen, hidden_dim). This is so that when we
+                split x during sequence parallel, we split the batch * seqlen dimension
+                (in case batch is small).
+            mlp_sp_logit: (b, 4*hidden_dim), calculate topk neuron to activate for MLP
+            head_idx: (b, k), k is the number of selected heads.
+        """
+        do_token_generation = x.size(1) == 1
+
+        # prompting sequence length
+        if x.size(1) != 1:
+            self.cache_offset = torch.tensor([x.size(1)], dtype=torch.int32).to(
+                x.device
+            )
+
+        curr_stream = torch.cuda.current_stream()
+
+        if (
+            inference_params is not None
+            and inference_params.sequence_len_offset > 0
+            and head_idx != None
+        ):
+            assert x.size(1) == 1
+            self.x_cache[self.counter] = x
+            # get the token index to compute
+            if self.counter == 15:
+                # computer key value for past 16 tokens to clear x cache
+                self.to_compute_token_idx.reset(device=x.device)
+                head_idx = torch.arange(
+                    0, self.num_head_per_node, dtype=torch.int32, device=x.device
+                )
+
+            head_recompute_token_idx = self.to_compute_token_idx.get_batch_idx(
+                head_idx, self.counter + 1
+            )
+
+            from src.ops.triton.attention_proj_sparse import qkv_proj_sparse
+
+            qkv = qkv_proj_sparse(
+                self.x_cache[: self.counter + 1],
+                rearrange(
+                    self.Wqkv.weight,
+                    "(three n m) d -> three n m d",
+                    three=3,
+                    n=self.num_head_per_node,
+                    m=self.head_dim,
+                    d=self.embed_dim,
+                ),
+                head_idx,
+                head_recompute_token_idx,
+                rearrange(
+                    self.Wqkv.bias,
+                    "(three n m) -> three n m",
+                    three=3,
+                    n=self.num_head_per_node,
+                    m=self.head_dim,
+                ),
+            )
+
+            # update trackers
+            if self.counter != 15:
+                self.to_compute_token_idx.update(
+                    head_idx, self.counter, head_recompute_token_idx
+                )
+            self.counter += 1
+        else:
+            qkv = self.Wqkv(x)
+        curr_stream.record_event(self.event_qkv)
+
+        # mlp sp topk
+        mlp_idx = None
+        with torch.cuda.stream(self.sp_stream):
+            self.sp_stream.wait_event(self.event_qkv)
+            if mlp_sp_logit != None:
+                _, mlp_idx = mlp_sp_logit.topk(self.mlp_k, sorted=False)
+            self.sp_stream.record_event(self.event_mlp_sp)
+
+        if seqlen is None and head_idx is None:
+            qkv = rearrange(
+                qkv, "b s (three h d) -> b s three h d", three=3, d=self.head_dim
+            )
+        elif seqlen is not None:
+            qkv = rearrange(
+                qkv,
+                "(b s) (three h d) -> b s three h d",
+                s=seqlen,
+                three=3,
+                d=self.head_dim,
+            )
+
+        if inference_params is None:
+            if self.rotary_emb_dim > 0:
+                qkv = self.rotary_emb(qkv)
+            if not self.checkpointing:
+                context = self.inner_attn(qkv, **kwargs)
+            else:
+                context = torch.utils.checkpoint.checkpoint(
+                    self.inner_attn, qkv, **kwargs
+                )
+        else:
+            if (
+                not inference_params.fused_ft_kernel
+            ) or inference_params.sequence_len_offset == 0:
+                if self.rotary_emb_dim > 0:
+                    qkv = self.rotary_emb(
+                        qkv, seqlen_offset=inference_params.sequence_len_offset
+                    )
+                q = qkv[:, :, 0]
+                assert (
+                    self.layer_idx is not None
+                ), "Generation requires layer_idx in the constructor"
+                kv = _update_kv_cache(qkv[:, :, 1:], inference_params, self.layer_idx)
+                # If we're processing the prompt, causal=None (use self.causal).
+                # If we're decoding, then causal=False.
+                causal = None if inference_params.sequence_len_offset == 0 else False
+                context = self.inner_cross_attn(q, kv, causal=causal)
+            else:
+                assert inference_params.fused_ft_kernel
+                assert ft_attention is not None
+                k_cache, v_cache = inference_params.key_value_memory_dict[
+                    self.layer_idx
+                ]
+
+                from src.ops.triton.attention_proj_sparse import k_cache_copy_sparse
+                from src.ops.triton.attention_proj_sparse import v_cache_copy_sparse
+
+                # copy calculate KV to kvcahce
+                if head_idx != None:
+                    assert x.size(1) == 1
+                    # qkv:  b, 3, h d
+                    k_cache_copy_sparse(
+                        qkv[:, 1],
+                        k_cache,
+                        head_idx,
+                        head_recompute_token_idx,
+                        self.cache_offset,
+                    )
+                    v_cache_copy_sparse(
+                        qkv[:, 2],
+                        v_cache,
+                        head_idx,
+                        head_recompute_token_idx,
+                        self.cache_offset,
+                    )
+                    context = ft_attention.single_query_attention(
+                        *qkv[-1:, :, :].unbind(dim=1),
+                        k_cache,
+                        v_cache,
+                        inference_params.lengths_per_sample,
+                        inference_params.sequence_len_offset,
+                        self.rotary_emb_dim,
+                    )
+                else:
+                    context = ft_attention.single_query_attention(
+                        *rearrange(qkv, "b 1 three h d -> b three h d").unbind(dim=1),
+                        # *inference_params.key_value_memory_dict[self.layer_idx],
+                        k_cache,
+                        v_cache,
+                        inference_params.lengths_per_sample,
+                        inference_params.sequence_len_offset,
+                        self.rotary_emb_dim,
+                    )
+                    context = rearrange(context, "b h d -> b 1 h d")
+        if seqlen is None:
+            if head_idx == None:
+                context = rearrange(context, "b s h d -> b s (h d)")
+        else:
+            context = rearrange(context, "b s h d -> (b s) (h d)")
+
+        if (
+            inference_params is not None
+            and inference_params.sequence_len_offset > 0
+            and head_idx != None
+        ):
+            assert context.size(0) == 1
+            from src.ops.triton.attention_proj_sparse import out_proj_sparse
+
+            out = out_proj_sparse(
+                context,
+                rearrange(
+                    self.out_proj.weight,
+                    "d (n m) -> d n m",
+                    n=self.num_head_per_node,
+                    m=self.head_dim,
+                ),
+                head_idx,
+                self.out_proj.bias,
+            )
+
+            # clear token cache and tracker
+            if self.counter == 16:
+                self.counter = 0
+                self.x_cache = torch.empty(
+                    (16, self.embed_dim),
+                    device=x.device,
+                    dtype=torch.float16,
+                )
+                self.cache_offset += 16
+        else:
+            out = self.out_proj(context)
+
+        curr_stream.record_event(self.event_out)
+
+        out = all_reduce(out, self.process_group)
+
+        # parallel attention sparse prediction with Attention AllReduce
+        att_idx = None
+        with torch.cuda.stream(self.sp_stream):
+            self.sp_stream.wait_event(self.event_out)
+            if do_token_generation:
+                att_sp_logit = self.sp(residual)
+                _, att_idx = att_sp_logit.topk(self.att_k, sorted=False)
+                att_idx = att_idx.to(torch.int32)
+            self.sp_stream.record_event(self.event_att_sp)
+        curr_stream.wait_event(self.event_mlp_sp)
+        curr_stream.wait_event(self.event_att_sp)
+        return out, mlp_idx, att_idx
