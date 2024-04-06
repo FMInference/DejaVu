@@ -24,7 +24,7 @@ We collect training data by running model inference using Decentralized_FM_alpha
 
 **Collect the training data**
 
-To get started, you need to first collect the training data by runing model inference over c4 
+To get started, you need to first collect the training data by running model inference over c4 
 
 ```
 DejaVu/Decentralized_FM_alpha/run_infer_opt_175b_collect_sp_data.sh
